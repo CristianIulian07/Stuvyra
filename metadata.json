@@ -1,0 +1,6 @@
+{
+  "name": "Stuvyra",
+  "description": "An iOS 26 Liquid Glass inspired AI student study companion for university courses, personalized study schedules, exam simulations, and academic analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
