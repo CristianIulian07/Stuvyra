@@ -70,7 +70,7 @@ Editează `.env` și adaugă cheia ta Gemini:
 
 ```env
 GEMINI_API_KEY=cheia_ta_gemini_aici
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.8-flash
 PORT=3001
 ```
 
