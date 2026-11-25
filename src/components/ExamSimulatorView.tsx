@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Award,
   CheckCircle2,
   Clock,
   Lightbulb,
+  Pause,
   Play,
+  Trash2,
 } from 'lucide-react';
 import {
   AccountWorkspaceData,
@@ -46,8 +48,40 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
     Record<string, string>
   >({});
 
+  const [selectedSessionId, setSelectedSessionId] = useState<string>(
+    workspace.examSessions[0]?.id || ''
+  );
+  const [examSecondsLeft, setExamSecondsLeft] = useState<number>(45 * 60);
+  const [examTimerRunning, setExamTimerRunning] = useState<boolean>(false);
+
   const activeExam: SimulatedExamSession | undefined =
+    workspace.examSessions.find((s) => s.id === selectedSessionId) ||
     workspace.examSessions[0];
+
+  useEffect(() => {
+    if (activeExam) {
+      setExamSecondsLeft(activeExam.durationMinutes * 60);
+      setExamTimerRunning(!activeExam.submitted);
+    }
+  }, [activeExam?.id]);
+
+  useEffect(() => {
+    if (!examTimerRunning || !activeExam || activeExam.submitted) return;
+    const interval = window.setInterval(() => {
+      setExamSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setExamTimerRunning(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [examTimerRunning, activeExam?.id, activeExam?.submitted]);
+
+  const formattedExamTimer = `${String(
+    Math.floor(examSecondsLeft / 60)
+  ).padStart(2, '0')}:${String(examSecondsLeft % 60).padStart(2, '0')}`;
 
   const activeSubject =
     workspace.subjects.find((s) => s.id === selectedSubjectId) ||
@@ -142,6 +176,7 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
         ...prev,
         examSessions: [newSession, ...prev.examSessions],
       }));
+      setSelectedSessionId(newSession.id);
     } catch (err: any) {
       setSimError(
         err?.message ||
@@ -158,8 +193,8 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
     if (!activeExam) return;
     onUpdateWorkspace((prev) => ({
       ...prev,
-      examSessions: prev.examSessions.map((sess, idx) =>
-        idx === 0
+      examSessions: prev.examSessions.map((sess) =>
+        sess.id === activeExam.id
           ? {
               ...sess,
               questions: sess.questions.map((q) =>
@@ -169,6 +204,19 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
           : sess
       ),
     }));
+  };
+
+  const handleDeleteExamSession = (sessionId: string) => {
+    onUpdateWorkspace((prev) => {
+      const remaining = prev.examSessions.filter((s) => s.id !== sessionId);
+      if (selectedSessionId === sessionId) {
+        setSelectedSessionId(remaining[0]?.id || '');
+      }
+      return {
+        ...prev,
+        examSessions: remaining,
+      };
+    });
   };
 
   const handleRequestQuestionHint = async (
@@ -203,8 +251,8 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
 
       onUpdateWorkspace((prev) => ({
         ...prev,
-        examSessions: prev.examSessions.map((sess, idx) =>
-          idx === 0
+        examSessions: prev.examSessions.map((sess) =>
+          sess.id === activeExam.id
             ? {
                 ...sess,
                 questions: sess.questions.map((q) =>
@@ -265,19 +313,19 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
       });
 
       onUpdateWorkspace((prev) => {
-        const current = prev.examSessions[0];
+        const current = prev.examSessions.find((s) => s.id === activeExam.id);
         if (!current) return prev;
 
         const updatedQuestions = current.questions.map((q) => {
           const grade = gradedMap.get(q.questionNumber);
           return {
             ...q,
-            awardedPoints: grade ? grade.awardedPoints : 8,
+            awardedPoints: grade ? grade.awardedPoints : 0,
             aiFeedback: grade
               ? grade.aiFeedback
               : language === 'ro'
-                ? 'Demonstrație solidă și raționament clar.'
-                : 'Solid derivation and clear reasoning.',
+                ? 'Evaluare completă.'
+                : 'Evaluation complete.',
           };
         });
 
@@ -288,7 +336,7 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
         const pct =
           current.maxScore > 0
             ? Math.round((totalScore / current.maxScore) * 100)
-            : 85;
+            : 0;
 
         const updatedSession: SimulatedExamSession = {
           ...current,
@@ -300,9 +348,14 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
             `Scored ${totalScore}/${current.maxScore} (${pct}%).`,
         };
 
+        const elapsedMins = Math.max(
+          5,
+          Math.round((current.durationMinutes * 60 - examSecondsLeft) / 60) || 25
+        );
+
         const nextLogs = recordStudyActivity(prev.dailyLogs, todayIso, {
-          minutes: 35,
-          exercises: updatedQuestions.length,
+          minutes: elapsedMins,
+          exercises: updatedQuestions.filter((q) => (q.userAnswer || '').trim().length > 0).length,
           sessions: 1,
           subjectName: current.subjectName,
           note:
@@ -314,10 +367,13 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
 
         return {
           ...prev,
-          examSessions: [updatedSession, ...prev.examSessions.slice(1)],
+          examSessions: prev.examSessions.map((s) =>
+            s.id === current.id ? updatedSession : s
+          ),
           dailyLogs: nextLogs,
         };
       });
+      setExamTimerRunning(false);
     } catch (err: any) {
       setGradeError(
         err?.message ||
@@ -431,6 +487,29 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
       ) : null}
 
       {/* Active Simulated Exam Paper */}
+      {workspace.examSessions.length > 1 && !isSimulating && (
+        <div className="liquid-glass-subtle rounded-2xl p-3.5 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-slate-300 px-2">
+            {language === 'ro' ? 'Simulări salvate:' : 'Saved simulations:'}
+          </span>
+          {workspace.examSessions.map((sess, idx) => (
+            <button
+              key={sess.id}
+              type="button"
+              onClick={() => setSelectedSessionId(sess.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
+                activeExam?.id === sess.id
+                  ? 'liquid-glass-btn-primary text-white font-semibold'
+                  : 'liquid-glass-btn text-slate-300'
+              }`}
+            >
+              #{workspace.examSessions.length - idx} · {sess.subjectName}
+              {sess.submitted ? ` (${sess.totalScore}/${sess.maxScore})` : ''}
+            </button>
+          ))}
+        </div>
+      )}
+
       {activeExam && !isSimulating && (
         <div className="liquid-glass rounded-[28px] p-6 sm:p-8 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-white/15">
@@ -451,17 +530,49 @@ export const ExamSimulatorView: React.FC<ExamSimulatorViewProps> = ({
               </h2>
             </div>
 
-            {activeExam.submitted && (
-              <div className="liquid-glass-subtle rounded-2xl px-4 py-2.5 flex items-center gap-3">
-                <Award className="w-5 h-5 text-emerald-300" />
-                <div>
-                  <p className="text-xs text-slate-300">{t.examScoreLabel}</p>
-                  <p className="text-lg font-bold text-white font-mono-tabular">
-                    {activeExam.totalScore}/{activeExam.maxScore} pts
-                  </p>
+            <div className="flex flex-wrap items-center gap-2.5">
+              {!activeExam.submitted && (
+                <div className="liquid-glass-subtle rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+                  <Clock className="w-4 h-4 text-sky-300" />
+                  <span className="text-base font-bold font-mono-tabular text-white">
+                    {formattedExamTimer}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExamTimerRunning((prev) => !prev)}
+                    aria-label={examTimerRunning ? 'Pause exam timer' : 'Resume exam timer'}
+                    className="liquid-glass-btn p-1.5 rounded-lg text-slate-200"
+                  >
+                    {examTimerRunning ? (
+                      <Pause className="w-3.5 h-3.5" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                 </div>
-              </div>
-            )}
+              )}
+
+              {activeExam.submitted && (
+                <div className="liquid-glass-subtle rounded-2xl px-4 py-2.5 flex items-center gap-3">
+                  <Award className="w-5 h-5 text-emerald-300" />
+                  <div>
+                    <p className="text-xs text-slate-300">{t.examScoreLabel}</p>
+                    <p className="text-lg font-bold text-white font-mono-tabular">
+                      {activeExam.totalScore}/{activeExam.maxScore} pts
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => handleDeleteExamSession(activeExam.id)}
+                aria-label="Delete simulated exam"
+                className="liquid-glass-btn p-2.5 rounded-xl text-slate-300 hover:text-rose-300"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {activeExam.submitted && activeExam.overallFeedback && (

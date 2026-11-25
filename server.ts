@@ -1,41 +1,118 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Type } from '@google/genai';
+
+dotenv.config({ path: '.env.local' });
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+
+function getConfiguredModel(): string {
+  const custom = process.env.GEMINI_MODEL?.trim();
+  return custom && custom.length > 0 ? custom : DEFAULT_GEMINI_MODEL;
+}
+
 function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim() === '') {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (
+    !apiKey ||
+    apiKey === 'MY_GEMINI_API_KEY' ||
+    apiKey === 'cheia_ta_aici' ||
+    apiKey === ''
+  ) {
     return null;
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+  return new GoogleGenAI({ apiKey });
+}
+
+const DATA_DIR = path.join(__dirname, 'data');
+const WORKSPACES_FILE = path.join(DATA_DIR, 'workspaces.json');
+
+function readServerWorkspaces(): Record<string, unknown> {
+  try {
+    if (!fs.existsSync(WORKSPACES_FILE)) {
+      return {};
+    }
+    const raw = fs.readFileSync(WORKSPACES_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeServerWorkspaces(accounts: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpFile = `${WORKSPACES_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(accounts, null, 2), 'utf-8');
+    fs.renameSync(tmpFile, WORKSPACES_FILE);
+  } catch (err) {
+    console.warn('Could not persist workspaces to disk:', err);
+  }
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = Number(process.env.PORT) || 3001;
 
   app.use(express.json({ limit: '15mb' }));
+
+  // Health & AI configuration endpoint
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      apiKeyConfigured: Boolean(getGeminiClient()),
+      model: getConfiguredModel(),
+    });
+  });
+
+  // Persistent Workspace Storage REST Endpoints
+  app.get('/api/workspaces', (_req, res) => {
+    res.json({ accounts: readServerWorkspaces() });
+  });
+
+  app.put('/api/workspaces/:username', (req, res) => {
+    const username = String(req.params.username || '').trim();
+    const workspace = req.body;
+    if (!username || !workspace || typeof workspace !== 'object') {
+      res.status(400).json({ error: 'Invalid workspace payload.' });
+      return;
+    }
+    const accounts = readServerWorkspaces();
+    accounts[username] = workspace;
+    writeServerWorkspaces(accounts);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/workspaces/:username', (req, res) => {
+    const username = String(req.params.username || '').trim();
+    if (!username) {
+      res.status(400).json({ error: 'Missing username.' });
+      return;
+    }
+    const accounts = readServerWorkspaces();
+    delete accounts[username];
+    writeServerWorkspaces(accounts);
+    res.json({ ok: true });
+  });
 
   // 1. Academic Dashboard Generator based on current semester subjects
   app.post('/api/ai/academic-overview', async (req, res) => {
     try {
       const { profile, subjects, todayIso, simulateError, language = 'en' } = req.body || {};
       const isRo = language === 'ro';
-      await delay(450);
+      await delay(300);
 
       if (simulateError) {
         res.status(503).json({
@@ -47,6 +124,7 @@ async function startServer() {
       }
 
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const subjectList = Array.isArray(subjects) ? subjects : [];
       const subjectNames = subjectList
         .map((s: any) => `${s.name} (Midterm: ${s.midtermDate || 'TBD'}, Final: ${s.finalDate || 'TBD'})`)
@@ -58,8 +136,8 @@ async function startServer() {
       if (ai && subjectList.length > 0) {
         try {
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: `You are Stuvyra, an academic AI advisor for ${profile?.username || 'a student'} at ${profile?.university || 'University'} (${profile?.faculty || 'Faculty'}, Major: ${profile?.major || 'Major'}, ${profile?.yearOfStudy || 'Year'}, ${profile?.currentSemester || 'Semester'}). Today's date is ${todayIso || '2026-10-26'}.
+            model,
+            contents: `You are Stuvyra, an academic AI advisor for ${profile?.username || 'a student'} at ${profile?.university || 'University'} (${profile?.faculty || 'Faculty'}, Major: ${profile?.major || 'Major'}, ${profile?.yearOfStudy || 'Year'}, ${profile?.currentSemester || 'Semester'}). Today's date is ${todayIso || '2026-11-25'}.
 The student is taking these subjects this semester: ${subjectNames}.
 ${langInstruction}
 Create a concise academic dashboard overview with a welcoming headline, a 2-sentence strategic focus plan for the semester, and 3 concrete upcoming assignment deadlines or study milestones with realistic YYYY-MM-DD due dates.`,
@@ -102,12 +180,12 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
 
       const primarySubject = subjectList[0]?.name || (isRo ? 'Materia Principală' : 'Core Major Coursework');
       const secondarySubject = subjectList[1]?.name || primarySubject;
-      const baseDate = todayIso || '2026-10-26';
+      const baseDate = todayIso || '2026-11-25';
 
       if (isRo) {
         res.json({
-          welcomeHeadline: `Centrul Academic de Comandă — ${profile?.currentSemester || 'Semestrul Curent'}`,
-          semesterStrategy: `Te concentrezi pe ${subjectList.length || 1} materii active la ${profile?.university || 'universitate'}. Prioritizează sinteza teoretică pentru ${primarySubject} și rezolvarea etapizată a fișelor de seminar înainte de examenele parțiale.`,
+          welcomeHeadline: `Plan Strategic — ${profile?.currentSemester || 'Semestrul Curent'}`,
+          semesterStrategy: `Te concentrezi pe ${subjectList.length || 1} materii active la ${profile?.university || 'universitate'}. Prioritizează sinteza teoretică pentru ${primarySubject} și rezolvarea etapizată a fișelor de seminar înainte de examenele parțiale și sesiune.`,
           suggestedReminders: [
             {
               subjectName: primarySubject,
@@ -118,8 +196,8 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
             },
             {
               subjectName: secondarySubject,
-              title: `${secondarySubject}: Recapitulare Formule și Demonstrații pentru Parțial`,
-              dueDate: subjectList[1]?.midtermDate || baseDate,
+              title: `${secondarySubject}: Recapitulare Formule și Demonstrații`,
+              dueDate: subjectList[1]?.midtermDate || subjectList[1]?.finalDate || baseDate,
               category: 'milestone',
               priority: 'high',
             },
@@ -129,8 +207,8 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
       }
 
       res.json({
-        welcomeHeadline: `${profile?.currentSemester || 'Current Semester'} Academic Command Center`,
-        semesterStrategy: `Focusing on ${subjectList.length || 1} active course${subjectList.length === 1 ? '' : 's'} at ${profile?.university || 'your university'}. Prioritize early concept synthesis for ${primarySubject} and stagger practice problem sets ahead of midterm dates.`,
+        welcomeHeadline: `${profile?.currentSemester || 'Current Semester'} Strategic Command Plan`,
+        semesterStrategy: `Focusing on ${subjectList.length || 1} active course${subjectList.length === 1 ? '' : 's'} at ${profile?.university || 'your university'}. Prioritize early concept synthesis for ${primarySubject} and stagger practice problem sets ahead of midterm and final dates.`,
         suggestedReminders: [
           {
             subjectName: primarySubject,
@@ -142,7 +220,7 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
           {
             subjectName: secondarySubject,
             title: `${secondarySubject}: Midterm Formula & Proof Checkpoint`,
-            dueDate: subjectList[1]?.midtermDate || baseDate,
+            dueDate: subjectList[1]?.midtermDate || subjectList[1]?.finalDate || baseDate,
             category: 'milestone',
             priority: 'high',
           },
@@ -161,7 +239,7 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
       const { profile, subjects, documents, exercises, todayIso, simulateError, language = 'en' } =
         req.body || {};
       const isRo = language === 'ro';
-      await delay(500);
+      await delay(350);
 
       if (simulateError) {
         res.status(503).json({
@@ -173,6 +251,7 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
       }
 
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const subjectList = Array.isArray(subjects) ? subjects : [];
       const docList = Array.isArray(documents) ? documents : [];
       const exList = Array.isArray(exercises) ? exercises : [];
@@ -196,10 +275,10 @@ Create a concise academic dashboard overview with a welcoming headline, a 2-sent
           }
 
           const promptText = `You are Stuvyra, an expert university AI study planner for ${profile?.username || 'a student'} (${profile?.major || 'Major'} at ${profile?.university || 'University'}).
-Today's date is ${todayIso || '2026-10-26'}.
+Today's date is ${todayIso || '2026-11-25'}.
 ${langInstruction}
 Subjects & Exam Dates:
-${subjectList.map((s: any) => `- ${s.name} (${s.code}): Midterm on ${s.midtermDate}, Final on ${s.finalDate}`).join('\n')}
+${subjectList.map((s: any) => `- ${s.name} (${s.code}): Midterm on ${s.midtermDate || 'TBD'}, Final on ${s.finalDate || 'TBD'}`).join('\n')}
 
 Uploaded Course PDFs:
 ${docList.map((d: any) => `- ${d.fileName}: ${d.extractedText || 'Course lecture PDF'}`).join('\n') || 'None yet'}
@@ -215,7 +294,7 @@ Generate:
           parts.push({ text: promptText });
 
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model,
             contents: { parts },
             config: {
               responseMimeType: 'application/json',
@@ -291,8 +370,8 @@ Generate:
         res.json({
           scheduleBlocks: [
             {
-              dayLabel: 'Azi · Sinteză Suport de Curs PDF',
-              date: todayIso || '2026-10-26',
+              dayLabel: 'Azi · Sinteză Suport de Curs',
+              date: todayIso || '2026-11-25',
               subjectName: s0.name,
               topic: `Adnotare și Demonstrații Cheie: ${latestDoc}`,
               durationMinutes: 50,
@@ -300,7 +379,7 @@ Generate:
             },
             {
               dayLabel: 'Azi · Antrenament Exerciții Seminar',
-              date: todayIso || '2026-10-26',
+              date: todayIso || '2026-11-25',
               subjectName: s0.name,
               topic: `Rezolvare Completă: ${unsolvedEx.title}`,
               durationMinutes: 45,
@@ -308,17 +387,17 @@ Generate:
             },
             {
               dayLabel: 'Mâine · Consolidare Teoretică',
-              date: todayIso || '2026-10-26',
+              date: todayIso || '2026-11-25',
               subjectName: s1.name,
-              topic: `Recapitulare Formule și Teoreme pentru Parțial (${s1.midtermDate || 'În curând'})`,
+              topic: `Recapitulare Formule și Teoreme (${s1.midtermDate || s1.finalDate || 'Sesiune'})`,
               durationMinutes: 60,
               focusType: 'Concept Synthesis',
             },
             {
               dayLabel: 'În 2 Zile · Simulare Examen în Condiții de Timp',
-              date: todayIso || '2026-10-26',
+              date: todayIso || '2026-11-25',
               subjectName: s0.name,
-              topic: `Simulare Subiecte de Parțial pentru ${s0.name}`,
+              topic: `Simulare Subiecte de Examen pentru ${s0.name}`,
               durationMinutes: 75,
               focusType: 'Exam Prep',
             },
@@ -327,7 +406,7 @@ Generate:
             {
               subjectName: s0.name,
               title: `Corelează ${latestDoc} cu Fișa de Seminar`,
-              actionableAdvice: `Extrage teoremele fundamentale din ${latestDoc} și aplică-le direct pe „${unsolvedEx.title}” înainte de parțialul din ${s0.midtermDate || 'această perioadă'}.`,
+              actionableAdvice: `Extrage teoremele fundamentale din ${latestDoc} și aplică-le direct pe „${unsolvedEx.title}” înainte de evaluare.`,
               impactLevel: 'Exam Critical',
             },
             {
@@ -339,15 +418,15 @@ Generate:
             {
               subjectName: s0.name,
               title: 'Jurnal de Cazuri Limită Înainte de Sesiune',
-              actionableAdvice: `Notează câte 3 capcane frecvente pentru fiecare fișă de exerciții de la facultate pentru a le revizui rapid cu 48 de ore înainte de examenul final (${s0.finalDate || 'sesiune'}).`,
+              actionableAdvice: `Notează câte 3 capcane frecvente pentru fiecare fișă de exerciții ca să le revizuiești rapid cu 48 de ore înainte de examen.`,
               impactLevel: 'Quick Win',
             },
           ],
           newReminders: [
             {
               subjectName: s0.name,
-              title: `Finalizează ${unsolvedEx.title} înainte de Parțialul la ${s0.name}`,
-              dueDate: s0.midtermDate || todayIso || '2026-10-26',
+              title: `Finalizează ${unsolvedEx.title} (${s0.name})`,
+              dueDate: s0.midtermDate || s0.finalDate || todayIso || '2026-11-25',
               category: 'milestone',
               priority: 'high',
             },
@@ -360,7 +439,7 @@ Generate:
         scheduleBlocks: [
           {
             dayLabel: 'Today · Focused PDF Synthesis',
-            date: todayIso || '2026-10-26',
+            date: todayIso || '2026-11-25',
             subjectName: s0.name,
             topic: `Deep-Dive Annotation: ${latestDoc}`,
             durationMinutes: 50,
@@ -368,7 +447,7 @@ Generate:
           },
           {
             dayLabel: 'Today · Faculty Exercise Drill',
-            date: todayIso || '2026-10-26',
+            date: todayIso || '2026-11-25',
             subjectName: s0.name,
             topic: `Solve & Verify: ${unsolvedEx.title}`,
             durationMinutes: 45,
@@ -376,17 +455,17 @@ Generate:
           },
           {
             dayLabel: 'Tomorrow · Cross-Topic Synthesis',
-            date: todayIso || '2026-10-26',
+            date: todayIso || '2026-11-25',
             subjectName: s1.name,
-            topic: `Midterm Proof & Formula Consolidation (${s1.midtermDate || 'Upcoming'})`,
+            topic: `Proof & Formula Consolidation (${s1.midtermDate || s1.finalDate || 'Upcoming'})`,
             durationMinutes: 60,
             focusType: 'Concept Synthesis',
           },
           {
             dayLabel: 'Upcoming · Timed Exam Rehearsal',
-            date: todayIso || '2026-10-26',
+            date: todayIso || '2026-11-25',
             subjectName: s0.name,
-            topic: `Simulated Midterm Conditions for ${s0.name}`,
+            topic: `Simulated Exam Conditions for ${s0.name}`,
             durationMinutes: 75,
             focusType: 'Exam Prep',
           },
@@ -395,7 +474,7 @@ Generate:
           {
             subjectName: s0.name,
             title: `Bridge ${latestDoc} with Faculty Exercises`,
-            actionableAdvice: `Extract the core theorem definitions from ${latestDoc} and test them directly against "${unsolvedEx.title}" before your ${s0.midtermDate || 'upcoming'} midterm.`,
+            actionableAdvice: `Extract the core theorem definitions from ${latestDoc} and test them directly against "${unsolvedEx.title}".`,
             impactLevel: 'Exam Critical',
           },
           {
@@ -407,15 +486,15 @@ Generate:
           {
             subjectName: s0.name,
             title: 'Error-Log Checkpoint Before Final Exam',
-            actionableAdvice: `Keep a 3-bullet mistake log for each faculty exercise sheet so you can review high-yield edge cases 48 hours before ${s0.finalDate || 'finals'}.`,
+            actionableAdvice: `Keep a 3-bullet mistake log for each faculty exercise sheet so you can review high-yield edge cases 48 hours before finals.`,
             impactLevel: 'Quick Win',
           },
         ],
         newReminders: [
           {
             subjectName: s0.name,
-            title: `Complete ${unsolvedEx.title} ahead of ${s0.name} Midterm`,
-            dueDate: s0.midtermDate || todayIso || '2026-10-26',
+            title: `Complete ${unsolvedEx.title} (${s0.name})`,
+            dueDate: s0.midtermDate || s0.finalDate || todayIso || '2026-11-25',
             category: 'milestone',
             priority: 'high',
           },
@@ -434,7 +513,7 @@ Generate:
       const { subject, exercises, documents, questionCount = 3, simulateError, language = 'en' } =
         req.body || {};
       const isRo = language === 'ro';
-      await delay(500);
+      await delay(350);
 
       if (simulateError) {
         res.status(503).json({
@@ -446,9 +525,11 @@ Generate:
       }
 
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const exList = Array.isArray(exercises) ? exercises : [];
       const docList = Array.isArray(documents) ? documents : [];
       const subjectName = subject?.name || (isRo ? 'Curs Universitar' : 'University Course');
+      const count = Math.min(Math.max(1, Number(questionCount) || 3), 6);
       const langInstruction = isRo
         ? 'IMPORTANT: Write topic, prompt, sampleSolution, and gradingCriteria in fluent Romanian. Keep difficulty as one of "Foundation", "Intermediate", or "Advanced".'
         : 'Write all fields in clear English.';
@@ -456,7 +537,7 @@ Generate:
       if (ai) {
         try {
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model,
             contents: `You are a university professor creating a realistic simulated exam for "${subjectName}".
 ${langInstruction}
 Base the exam questions directly on the style and concepts of these faculty exercises and course PDFs:
@@ -465,7 +546,7 @@ ${exList.map((e: any) => `- [${e.difficulty}] ${e.title}: ${e.prompt}`).join('\n
 Course PDFs:
 ${docList.map((d: any) => `- ${d.fileName}: ${d.extractedText}`).join('\n') || 'Standard syllabus'}
 
-Generate ${questionCount} rigorous exam questions. Each question must have a topic, difficulty ("Foundation", "Intermediate", or "Advanced"), clear problem prompt, points (10), comprehensive sampleSolution, and gradingCriteria.`,
+Generate ${count} rigorous exam questions. Each question must have a topic, difficulty ("Foundation", "Intermediate", or "Advanced"), clear problem prompt, points (10), comprehensive sampleSolution, and gradingCriteria.`,
             config: {
               responseMimeType: 'application/json',
               responseSchema: {
@@ -525,22 +606,22 @@ Generate ${questionCount} rigorous exam questions. Each question must have a top
               },
             ];
 
-      const questions = [0, 1, 2].map((idx) => {
+      const questions = Array.from({ length: count }, (_, idx) => {
         const refEx = baseExercises[idx % baseExercises.length];
-        const diff = idx === 0 ? 'Foundation' : idx === 1 ? 'Intermediate' : 'Advanced';
+        const diff = idx === 0 ? 'Foundation' : idx === count - 1 ? 'Advanced' : 'Intermediate';
         if (isRo) {
           return {
             questionNumber: idx + 1,
             topic: refEx.title || `${subjectName} — Subiectul ${idx + 1}`,
             difficulty: diff,
             prompt:
-              idx === 0
-                ? `[Subiectul 1 — Adaptat după ${refEx.title}] Formulează riguros modelul matematic și demonstrează condiția de optimalitate pentru: ${refEx.prompt}`
-                : idx === 1
-                  ? `[Subiectul 2 — Construcție Algoritmică] Pornind de la o instanță modificată a problemei „${refEx.title}”, construiește pas cu pas algoritmul sau demonstrația și analizează complexitatea în cazul cel mai defavorabil.`
-                  : `[Subiectul 3 — Analiză Cazuri Limită] Presupunem că ipoteza de capacitate sau regularitate din „${refEx.title}” este relaxată. Stabilește dacă teorema rămâne adevărată, oferă un contraexemplu sau o demonstrație adaptată și justifică răspunsul.`,
+              idx % 3 === 0
+                ? `[Subiectul ${idx + 1} — Adaptat după ${refEx.title}] Formulează riguros modelul matematic și demonstrează condiția de corectitudine pentru: ${refEx.prompt}`
+                : idx % 3 === 1
+                  ? `[Subiectul ${idx + 1} — Construcție Algoritmică] Pornind de la o instanță modificată a problemei „${refEx.title}”, construiește pas cu pas algoritmul sau demonstrația și analizează complexitatea în cazul cel mai defavorabil.`
+                  : `[Subiectul ${idx + 1} — Analiză Cazuri Limită] Presupunem că ipoteza de regularitate din „${refEx.title}” este relaxată. Stabilește dacă proprietatea rămâne adevărată, oferă un contraexemplu sau o demonstrație adaptată și justifică răspunsul.`,
             points: 10,
-            sampleSolution: `Se pornește de la definiția formală din ${refEx.title}. Se stabilesc explicit marginile superioare și inferioare, se verifică condițiile la limită și se deduce expresia asimptotică sau algebrică exactă.`,
+            sampleSolution: `Se pornește de la definiția formală din ${refEx.title}. Se stabilesc explicit invariantele, se verifică condițiile la limită și se deduce expresia asimptotică sau algebrică exactă.`,
             gradingCriteria:
               '4p pentru formularea corectă și definiții, 4p pentru pașii riguroși de demonstrație, 2p pentru analiza complexității și a cazurilor limită.',
           };
@@ -550,20 +631,20 @@ Generate ${questionCount} rigorous exam questions. Each question must have a top
           topic: refEx.title || `${subjectName} Topic ${idx + 1}`,
           difficulty: diff,
           prompt:
-            idx === 0
-              ? `[Exam Problem 1 — Adapted from ${refEx.title}] State the formal mathematical formulation and prove why the key optimality condition holds for: ${refEx.prompt}`
-              : idx === 1
-                ? `[Exam Problem 2 — Applied Construction] Given a modified instance of "${refEx.title}", construct a step-by-step algorithm or derivation and analyze its worst-case complexity or error bound.`
-                : `[Exam Problem 3 — Edge-Case Synthesis] Suppose the regularity or capacity assumption in "${refEx.title}" is relaxed. Identify whether the theorem still holds, provide a counterexample or adapted proof, and justify your conclusion.`,
+            idx % 3 === 0
+              ? `[Exam Problem ${idx + 1} — Adapted from ${refEx.title}] State the formal mathematical formulation and prove why the key correctness condition holds for: ${refEx.prompt}`
+              : idx % 3 === 1
+                ? `[Exam Problem ${idx + 1} — Applied Construction] Given a modified instance of "${refEx.title}", construct a step-by-step algorithm or derivation and analyze its worst-case complexity.`
+                : `[Exam Problem ${idx + 1} — Edge-Case Synthesis] Suppose the regularity assumption in "${refEx.title}" is relaxed. Identify whether the theorem still holds, provide a counterexample or adapted proof, and justify your conclusion.`,
           points: 10,
-          sampleSolution: `Start by invoking the core definition from ${refEx.title}. Establish the upper and lower bounds explicitly, verify boundary conditions, and conclude with the exact asymptotic or algebraic expression.`,
+          sampleSolution: `Start by invoking the core definition from ${refEx.title}. Establish the bounds explicitly, verify boundary conditions, and conclude with the exact asymptotic or algebraic expression.`,
           gradingCriteria:
             '4 pts for formal setup & definitions, 4 pts for rigorous derivation/proof steps, 2 pts for complexity or boundary analysis.',
         };
       });
 
       res.json({
-        durationMinutes: 45,
+        durationMinutes: count * 15,
         questions,
       });
     } catch (err: any) {
@@ -585,7 +666,7 @@ Generate ${questionCount} rigorous exam questions. Each question must have a top
         language = 'en',
       } = req.body || {};
       const isRo = language === 'ro';
-      await delay(350);
+      await delay(250);
 
       if (simulateError) {
         res.status(503).json({
@@ -597,6 +678,7 @@ Generate ${questionCount} rigorous exam questions. Each question must have a top
       }
 
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const langInstruction = isRo
         ? 'IMPORTANT: Write both hint and keyConceptToReview in fluent Romanian.'
         : 'Write both hint and keyConceptToReview in clear English.';
@@ -604,7 +686,7 @@ Generate ${questionCount} rigorous exam questions. Each question must have a top
       if (ai) {
         try {
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model,
             contents: `You are a supportive university TA for "${subjectName || 'Course'}".
 ${langInstruction}
 Give a concise, Socratic 2-sentence hint for this exercise without revealing the full final answer.
@@ -636,14 +718,14 @@ Student's current attempt: ${currentAttempt || 'Not started yet'}`,
 
       if (isRo) {
         res.json({
-          hint: `Concentrează-te pe invariantul structural din „${exerciseTitle || 'acest exercițiu'}”: scrie mai întâi funcția obiectiv sau legea de conservare, apoi verifică modul în care o perturbație unitară afectează condițiile la limită.`,
-          keyConceptToReview: `${subjectName || 'Curs'} — Invariant & Reducere la Condițiile de Frontieră`,
+          hint: `Concentrează-te pe invariantul structural din „${exerciseTitle || 'acest exercițiu'}”: scrie mai întâi relația de bază sau cazul elementar, apoi verifică modul în care o tranziție unitară afectează condițiile la limită.`,
+          keyConceptToReview: `${subjectName || 'Curs'} — Invariant & Condiții la Limită`,
         });
         return;
       }
 
       res.json({
-        hint: `Focus on the structural invariant in "${exerciseTitle || 'this problem'}": write down the objective function or conservation law first, then check how a unit perturbation affects the boundary condition.`,
+        hint: `Focus on the structural invariant in "${exerciseTitle || 'this problem'}": write down the base relation first, then check how a unit step affects the boundary condition.`,
         keyConceptToReview: `${subjectName || 'Course'} — Invariant & Boundary Reduction`,
       });
     } catch (err: any) {
@@ -658,7 +740,7 @@ Student's current attempt: ${currentAttempt || 'Not started yet'}`,
     try {
       const { subjectName, questions, simulateError, language = 'en' } = req.body || {};
       const isRo = language === 'ro';
-      await delay(450);
+      await delay(350);
 
       if (simulateError) {
         res.status(503).json({
@@ -671,6 +753,7 @@ Student's current attempt: ${currentAttempt || 'Not started yet'}`,
 
       const qList = Array.isArray(questions) ? questions : [];
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const langInstruction = isRo
         ? 'IMPORTANT: Write overallFeedback and aiFeedback in fluent, encouraging Romanian.'
         : 'Write overallFeedback and aiFeedback in clear English.';
@@ -678,18 +761,18 @@ Student's current attempt: ${currentAttempt || 'Not started yet'}`,
       if (ai && qList.length > 0) {
         try {
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model,
             contents: `Grade this simulated university exam for "${subjectName || 'Course'}".
 ${langInstruction}
 Questions and Student Answers:
 ${qList
   .map(
     (q: any, i: number) =>
-      `Q${i + 1} (${q.points} pts): ${q.prompt}\nSample Solution: ${q.sampleSolution}\nStudent Answer: ${q.userAnswer || '(blank)'}`
+      `Q${i + 1} (${q.points} pts): ${q.prompt}\nSample Solution: ${q.sampleSolution}\nGrading Criteria: ${q.gradingCriteria || 'Standard'}\nStudent Answer: ${q.userAnswer || '(blank)'}`
   )
   .join('\n\n')}
 
-Award fair points (0 to q.points) and concise constructive feedback for each question, plus an overallFeedback summary.`,
+Award fair points (0 if blank or completely unrelated, up to q.points for complete solutions) and concise constructive feedback for each question, plus an overallFeedback summary.`,
             config: {
               responseMimeType: 'application/json',
               responseSchema: {
@@ -726,31 +809,44 @@ Award fair points (0 to q.points) and concise constructive feedback for each que
 
       const gradedQuestions = qList.map((q: any, idx: number) => {
         const ans = (q.userAnswer || '').trim();
-        const pts = ans.length > 40 ? 9 : ans.length > 10 ? 7 : 5;
+        const maxPts = Number(q.points) || 10;
+        const pts =
+          ans.length === 0
+            ? 0
+            : ans.length > 120
+              ? Math.min(maxPts, 9)
+              : ans.length > 40
+                ? Math.min(maxPts, 7)
+                : Math.min(maxPts, 4);
+
         if (isRo) {
           return {
             questionNumber: q.questionNumber || idx + 1,
             awardedPoints: pts,
             aiFeedback:
-              ans.length > 10
-                ? 'Raționament bine structurat și notație clară. Asigură-te că menționezi explicit justificarea cazurilor limită și a complexității pentru punctaj maxim.'
-                : 'Punctaj parțial pentru formularea inițială; dezvoltă pașii formali ai demonstrației și compară cu soluția din barem.',
+              ans.length === 0
+                ? 'Subiect necompletat (0 puncte). Parcurge soluția din barem și încearcă să scrii cel puțin definițiile și ideea principală la următoarea simulare.'
+                : ans.length > 40
+                  ? 'Raționament bine structurat. Verifică baremul de mai jos pentru a te asigura că ai acoperit și justificarea cazurilor limită.'
+                  : 'Punctaj parțial pentru schița inițială; dezvoltă pașii formali ai demonstrației conform baremului.',
           };
         }
         return {
           questionNumber: q.questionNumber || idx + 1,
           awardedPoints: pts,
           aiFeedback:
-            ans.length > 10
-              ? 'Solid reasoning structure and clear notation. Make sure to state the boundary or complexity justification explicitly for full marks.'
-              : 'Partial credit for initial setup; expand your formal derivation steps and compare against the reference solution.',
+            ans.length === 0
+              ? 'No solution submitted (0 points). Review the reference solution below and write out at least the formal setup next time.'
+              : ans.length > 40
+                ? 'Solid reasoning structure. Compare against the reference solution to make sure boundary and complexity justifications are explicit.'
+                : 'Partial credit for initial outline; expand your formal derivation steps using the grading rubric.',
         };
       });
 
       res.json({
         overallFeedback: isRo
-          ? `Efort excelent la simularea de examen pentru ${subjectName || 'această materie'}! Parcurge demonstrațiile din barem pentru pașii cu punctaj parțial ca să îți asiguri pregătirea completă înainte de examen.`
-          : `Strong effort on your ${subjectName || 'Simulated'} Exam! Review the reference proofs on any partial-credit steps to lock in 100% readiness before exam day.`,
+          ? `Simulare evaluată pentru ${subjectName || 'această materie'}. Compară răspunsurile tale cu baremul de referință pentru fiecare subiect!`
+          : `Simulated exam graded for ${subjectName || 'this course'}. Compare your derivations against each reference solution below!`,
         gradedQuestions,
       });
     } catch (err: any) {
@@ -766,7 +862,7 @@ Award fair points (0 to q.points) and concise constructive feedback for each que
       const { profile, todayLog, subjects, reminders, simulateError, language = 'en' } =
         req.body || {};
       const isRo = language === 'ro';
-      await delay(400);
+      await delay(250);
 
       if (simulateError) {
         res.status(503).json({
@@ -778,6 +874,7 @@ Award fair points (0 to q.points) and concise constructive feedback for each que
       }
 
       const ai = getGeminiClient();
+      const model = getConfiguredModel();
       const minutes = todayLog?.minutesStudied ?? 0;
       const solved = todayLog?.exercisesSolved ?? 0;
       const score = todayLog?.examScorePercent;
@@ -790,14 +887,14 @@ Award fair points (0 to q.points) and concise constructive feedback for each que
       if (ai) {
         try {
           const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model,
             contents: `You are Stuvyra, a warm, insightful academic AI companion for ${profile?.username || 'student'}.
 ${langInstruction}
 Today's performance so far:
 - Study time logged today: ${minutes} minutes
 - Exercises solved today: ${solved}
 - Latest exam simulation score: ${score !== undefined ? `${score}%` : 'None today'}
-- Active subjects: ${subjectList.map((s: any) => `${s.name} (Midterm: ${s.midtermDate})`).join(', ')}
+- Active subjects: ${subjectList.map((s: any) => `${s.name} (Midterm: ${s.midtermDate || 'TBD'})`).join(', ')}
 - Upcoming reminders: ${(reminders || []).slice(0, 3).map((r: any) => `${r.title} (${r.dueDate})`).join(', ')}
 
 Return a JSON object with:
@@ -833,13 +930,13 @@ Return a JSON object with:
       if (isRo) {
         const summaryOfDay =
           minutes > 0
-            ? `Ritm excelent astăzi, ${profile?.username || 'student'} — ai acumulat deja ${minutes} minute de studiu concentrat și ai rezolvat ${solved} exerciții de la facultate${score ? ` cu un scor de ${score}% la simulare` : ''}.`
+            ? `Ritm excelent astăzi, ${profile?.username || 'student'} — ai acumulat deja ${minutes} minute de studiu concentrat și ai rezolvat ${solved} exerciții${score !== undefined ? ` (ultimul scor la simulare: ${score}%)` : ''}.`
             : `Un început proaspăt de zi, ${profile?.username || 'student'} — spațiul tău academic este pregătit pentru prima sesiune de studiu.`;
 
         const nextSessionSuggestion =
           minutes >= 60
-            ? `Pentru că ai deja un ritm foarte bun de rezolvare, dedică următoarele 40 de minute unui exercițiu avansat la ${firstSubject} fără a consulta notițele de curs.`
-            : `Începe cu o sesiune scurtă de 35 de minute de sinteză pe suportul de curs PDF la ${firstSubject} și rezolvă un exercițiu de bază pentru a intra ușor în ritm.`;
+            ? `Pentru că ai deja un ritm foarte bun, dedică următoarele 40 de minute unui exercițiu la ${firstSubject} fără a consulta notițele de curs.`
+            : `Începe cu o sesiune Pomodoro de 25–35 de minute pe suportul de curs la ${firstSubject} și rezolvă un exercițiu de bază.`;
 
         res.json({
           summaryOfDay,
@@ -852,13 +949,13 @@ Return a JSON object with:
 
       const summaryOfDay =
         minutes > 0
-          ? `Great consistency today, ${profile?.username || 'scholar'} — you have completed ${minutes} minutes of deep work and solved ${solved} faculty exercise${solved === 1 ? '' : 's'}${score ? ` with a ${score}% simulation score` : ''}.`
+          ? `Great consistency today, ${profile?.username || 'scholar'} — you have completed ${minutes} minutes of deep work and solved ${solved} exercise${solved === 1 ? '' : 's'}${score !== undefined ? ` (latest simulation: ${score}%)` : ''}.`
           : `Fresh slate today, ${profile?.username || 'scholar'} — your workspace is organized and ready for your first focused study block.`;
 
       const nextSessionSuggestion =
         minutes >= 60
-          ? `Since your problem-solving momentum is high, run a 40-minute active-recall drill on your toughest ${firstSubject} exercise without consulting lecture notes.`
-          : `Start with a crisp 35-minute PDF concept review on ${firstSubject} and solve one Foundation exercise to build effortless momentum.`;
+          ? `Since your momentum is high, run a 40-minute active-recall drill on ${firstSubject} without consulting lecture notes.`
+          : `Start with a focused 25–35 minute concept review on ${firstSubject} and solve one Foundation exercise.`;
 
       res.json({
         summaryOfDay,
@@ -889,7 +986,7 @@ Return a JSON object with:
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Stuvyra server running on http://0.0.0.0:${PORT}`);
+    console.log(`Stuvyra server running on http://localhost:${PORT}`);
   });
 }
 

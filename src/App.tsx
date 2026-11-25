@@ -15,11 +15,15 @@ import {
   TRANSLATIONS,
 } from './utils/i18n';
 import {
+  exportWorkspaceAsJson,
+  fetchServerWorkspaces,
   initializeWorkspaceFromBrowser,
   loadAllAccounts,
   saveAccountWorkspace,
+  saveAllAccounts,
   setActiveUsername,
 } from './utils/storage';
+import { Download } from 'lucide-react';
 import { LanguageToggle, ThemeToggle } from './components/GlassPrimitives';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { DashboardView } from './components/DashboardView';
@@ -49,6 +53,14 @@ export default function App() {
     setWorkspace(activeWorkspace);
     setAllAccounts(loaded);
     setInitialized(true);
+
+    fetchServerWorkspaces().then((serverAccounts) => {
+      if (Object.keys(serverAccounts).length > 0) {
+        const merged = { ...serverAccounts, ...loadAllAccounts() };
+        saveAllAccounts(merged);
+        setAllAccounts(merged);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -236,13 +248,26 @@ export default function App() {
                 </a>
               </nav>
 
-              {/* Zone 3: System Theme Toggle + Account Switcher */}
-              <div className="flex items-center gap-2.5 shrink-0">
+              {/* Zone 3: System Theme Toggle + Backup + Account Switcher */}
+              <div className="flex items-center gap-2 shrink-0">
                 <ThemeToggle
                   theme={theme}
                   onToggleTheme={handleToggleTheme}
                   language={language}
                 />
+                <button
+                  type="button"
+                  onClick={() => exportWorkspaceAsJson(workspace)}
+                  title={
+                    language === 'ro'
+                      ? 'Exportă copie de siguranță (.json)'
+                      : 'Export workspace backup (.json)'
+                  }
+                  className="liquid-glass-btn px-3 py-2 rounded-xl text-xs font-semibold text-sky-200 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Backup</span>
+                </button>
                 <button
                   type="button"
                   onClick={handleSwitchAccount}

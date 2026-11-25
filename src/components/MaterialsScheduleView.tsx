@@ -8,6 +8,7 @@ import {
   Lightbulb,
   Plus,
   Sparkles,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import {
@@ -15,6 +16,7 @@ import {
   CourseDocument,
   FacultyExercise,
   LearningInsight,
+  StudyReminder,
   StudyScheduleBlock,
 } from '../types/study';
 import { AppLanguage, TRANSLATIONS } from '../utils/i18n';
@@ -224,9 +226,27 @@ export const MaterialsScheduleView: React.FC<MaterialsScheduleViewProps> = ({
     }
   };
 
+  const handleDeleteDocument = (docId: string) => {
+    onUpdateWorkspace((prev) => ({
+      ...prev,
+      documents: prev.documents.filter((d) => d.id !== docId),
+    }));
+  };
+
+  const handleDeleteExercise = (exerciseId: string) => {
+    onUpdateWorkspace((prev) => ({
+      ...prev,
+      exercises: prev.exercises.filter((ex) => ex.id !== exerciseId),
+    }));
+  };
+
   const handleGenerateStudySchedule = async (simulateError = false) => {
-    if (workspace.subjects.length === 0 || workspace.documents.length === 0) {
-      setPlanError(t.needSubjectAndPdfErr);
+    if (workspace.subjects.length === 0) {
+      setPlanError(
+        language === 'ro'
+          ? 'Adaugă mai întâi cel puțin o materie în Panoul Principal pentru a genera orarul personalizat.'
+          : 'Please add at least one subject on the Dashboard first to generate your study schedule.'
+      );
       return;
     }
 
@@ -295,11 +315,46 @@ export const MaterialsScheduleView: React.FC<MaterialsScheduleViewProps> = ({
           })
         );
 
+        const existingRemTitles = new Set(
+          prev.reminders.map((r) => r.title.toLowerCase())
+        );
+        const addedReminders: StudyReminder[] = (data.newReminders || [])
+          .filter(
+            (r: any) =>
+              r?.title && !existingRemTitles.has(String(r.title).toLowerCase())
+          )
+          .map((r: any, idx: number) => {
+            const matchedSubj =
+              prev.subjects.find(
+                (s) =>
+                  s.name.toLowerCase() ===
+                  String(r.subjectName || '').toLowerCase()
+              ) || prev.subjects[0];
+            return {
+              id: `rem-plan-${Date.now()}-${idx}`,
+              subjectId: matchedSubj?.id || 'subj-1',
+              title: String(r.title).trim(),
+              dueDate: r.dueDate || todayIso,
+              category:
+                r.category === 'midterm' ||
+                r.category === 'final' ||
+                r.category === 'assignment'
+                  ? r.category
+                  : 'milestone',
+              completed: false,
+              priority:
+                r.priority === 'high' || r.priority === 'low'
+                  ? r.priority
+                  : 'medium',
+            };
+          });
+
         return {
           ...prev,
           scheduleBlocks: blocks.length > 0 ? blocks : prev.scheduleBlocks,
           learningInsights:
             insights.length > 0 ? insights : prev.learningInsights,
+          reminders: [...addedReminders, ...prev.reminders],
         };
       });
     } catch (err: any) {
@@ -546,6 +601,14 @@ export const MaterialsScheduleView: React.FC<MaterialsScheduleViewProps> = ({
                         </p>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDocument(doc.id)}
+                      aria-label={`Delete PDF ${doc.fileName}`}
+                      className="liquid-glass-btn p-2 rounded-xl text-slate-300 hover:text-rose-300 shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 );
               })
@@ -685,15 +748,25 @@ export const MaterialsScheduleView: React.FC<MaterialsScheduleViewProps> = ({
                         </div>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => handleRequestExerciseHint(ex, false)}
-                        disabled={isHintLoading}
-                        className="liquid-glass-btn px-3 py-1.5 rounded-xl text-xs font-medium text-amber-200 flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                      >
-                        <Lightbulb className="w-3.5 h-3.5 text-amber-300" />
-                        <span>{isHintLoading ? t.thinkingBtn : t.getHintBtn}</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleRequestExerciseHint(ex, false)}
+                          disabled={isHintLoading}
+                          className="liquid-glass-btn px-3 py-1.5 rounded-xl text-xs font-medium text-amber-200 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                        >
+                          <Lightbulb className="w-3.5 h-3.5 text-amber-300" />
+                          <span>{isHintLoading ? t.thinkingBtn : t.getHintBtn}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteExercise(ex.id)}
+                          aria-label={`Delete exercise ${ex.title}`}
+                          className="liquid-glass-btn p-1.5 rounded-xl text-slate-300 hover:text-rose-300 shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <p className="text-xs text-slate-200/90 leading-relaxed pl-6">

@@ -1,12 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bell,
   BookOpen,
   CheckCircle2,
   Circle,
   Clock,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Sparkles,
   Trash2,
   ArrowUpRight,
@@ -20,6 +23,7 @@ import { AppLanguage, TRANSLATIONS } from '../utils/i18n';
 import {
   calculateDaysUntil,
   formatIsoDate,
+  recordStudyActivity,
   sortRemindersByUrgency,
 } from '../utils/studyLogic';
 import { GlassErrorRetry, GlassSkeleton } from './GlassPrimitives';
@@ -72,6 +76,69 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const [isGeneratingOverview, setIsGeneratingOverview] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+
+  // Interactive Focus / Pomodoro Study Timer state
+  const [timerPresetMinutes, setTimerPresetMinutes] = useState<number>(25);
+  const [secondsLeft, setSecondsLeft] = useState<number>(25 * 60);
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+  const [timerNotice, setTimerNotice] = useState<string>('');
+
+  useEffect(() => {
+    if (!isTimerRunning) return;
+    const interval = window.setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setIsTimerRunning(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isTimerRunning]);
+
+  const handleSelectTimerPreset = (mins: number) => {
+    setIsTimerRunning(false);
+    setTimerPresetMinutes(mins);
+    setSecondsLeft(mins * 60);
+    setTimerNotice('');
+  };
+
+  const handleLogFocusSession = () => {
+    const elapsedMinutes = Math.max(
+      1,
+      Math.round((timerPresetMinutes * 60 - secondsLeft) / 60) || timerPresetMinutes
+    );
+    const focusSubj =
+      workspace.dailyAiInsight?.focusSubject ||
+      workspace.subjects[0]?.name ||
+      (language === 'ro' ? 'Studiu Individual' : 'Focused Study');
+
+    onUpdateWorkspace((prev) => ({
+      ...prev,
+      dailyLogs: recordStudyActivity(prev.dailyLogs, todayIso, {
+        minutes: elapsedMinutes,
+        sessions: 1,
+        subjectName: focusSubj,
+        note:
+          language === 'ro'
+            ? `Sesiune Pomodoro finalizată: ${elapsedMinutes}m la ${focusSubj}`
+            : `Completed Pomodoro session: ${elapsedMinutes}m on ${focusSubj}`,
+      }),
+    }));
+
+    setIsTimerRunning(false);
+    setSecondsLeft(timerPresetMinutes * 60);
+    setTimerNotice(
+      language === 'ro'
+        ? `+${elapsedMinutes} minute salvate în progresul de azi!`
+        : `+${elapsedMinutes} minutes logged to today's progress!`
+    );
+  };
+
+  const formattedTimer = `${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(
+    secondsLeft % 60
+  ).padStart(2, '0')}`;
 
   const handleRefreshDailyInsight = async (simulateError = false) => {
     setIsGeneratingInsight(true);
@@ -137,14 +204,55 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         throw new Error(data.error || 'Could not generate academic dashboard.');
       }
 
-      onUpdateWorkspace((prev) => ({
-        ...prev,
-        academicOverview: {
-          welcomeHeadline: data.welcomeHeadline,
-          semesterStrategy: data.semesterStrategy,
-          suggestedReminders: [],
-        },
-      }));
+      onUpdateWorkspace((prev) => {
+        const incoming = Array.isArray(data.suggestedReminders)
+          ? data.suggestedReminders
+          : [];
+        const existingTitles = new Set(
+          prev.reminders.map((r) => r.title.toLowerCase())
+        );
+        const createdReminders: StudyReminder[] = incoming
+          .filter(
+            (item: any) =>
+              item?.title && !existingTitles.has(String(item.title).toLowerCase())
+          )
+          .map((item: any, idx: number) => {
+            const matchedSubj =
+              prev.subjects.find(
+                (s) =>
+                  s.name.toLowerCase() ===
+                  String(item.subjectName || '').toLowerCase()
+              ) || prev.subjects[0];
+            const cat =
+              item.category === 'midterm' ||
+              item.category === 'final' ||
+              item.category === 'milestone'
+                ? item.category
+                : 'assignment';
+            return {
+              id: `rem-ai-${Date.now()}-${idx}`,
+              subjectId: matchedSubj?.id || 'subj-1',
+              title: String(item.title).trim(),
+              dueDate: item.dueDate || todayIso,
+              category: cat,
+              completed: false,
+              priority:
+                item.priority === 'high' || item.priority === 'low'
+                  ? item.priority
+                  : 'medium',
+            };
+          });
+
+        return {
+          ...prev,
+          reminders: [...createdReminders, ...prev.reminders],
+          academicOverview: {
+            welcomeHeadline: data.welcomeHeadline,
+            semesterStrategy: data.semesterStrategy,
+            suggestedReminders: incoming,
+          },
+        };
+      });
     } catch (err: any) {
       setOverviewError(
         err?.message ||
@@ -275,13 +383,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }));
   };
 
+  const handleDeleteReminder = (reminderId: string) => {
+    onUpdateWorkspace((prev) => ({
+      ...prev,
+      reminders: prev.reminders.filter((r) => r.id !== reminderId),
+    }));
+  };
+
   const sortedReminders = sortRemindersByUrgency(workspace.reminders);
 
   const defaultOverviewHeadline =
-    language === 'ro'
+    workspace.academicOverview?.welcomeHeadline ||
+    (language === 'ro'
       ? `Centrul Academic de Comandă — ${workspace.profile.currentSemester}`
-      : workspace.academicOverview?.welcomeHeadline ||
-        `${workspace.profile.currentSemester} Dashboard`;
+      : `${workspace.profile.currentSemester} Dashboard`);
 
   const hasLoggedToday =
     todayLog.minutesStudied > 0 || todayLog.exercisesSolved > 0;
@@ -374,6 +489,79 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Built-in Pomodoro Focus Timer */}
+          <div className="mt-5 liquid-glass-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="px-3 py-1.5 rounded-xl bg-sky-500/15 border border-sky-400/30 text-lg font-bold font-mono-tabular text-white">
+                {formattedTimer}
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-white">
+                  {language === 'ro' ? 'Cronometru Studiu (Pomodoro)' : 'Focus Study Timer'}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  {[25, 45, 60].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => handleSelectTimerPreset(preset)}
+                      className={`px-2 py-0.5 rounded-lg text-[11px] font-mono-tabular transition-colors ${
+                        timerPresetMinutes === preset
+                          ? 'bg-sky-400/25 text-white font-semibold'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      {preset}m
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsTimerRunning((prev) => !prev)}
+                className="liquid-glass-btn-primary px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
+              >
+                {isTimerRunning ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5" />
+                    <span>{language === 'ro' ? 'Pauză' : 'Pause'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    <span>{language === 'ro' ? 'Start' : 'Start'}</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsTimerRunning(false);
+                  setSecondsLeft(timerPresetMinutes * 60);
+                }}
+                aria-label="Reset timer"
+                className="liquid-glass-btn p-2 rounded-xl text-slate-200"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleLogFocusSession}
+                className="liquid-glass-btn px-3 py-2 rounded-xl text-xs font-semibold text-emerald-200 whitespace-nowrap"
+              >
+                {language === 'ro' ? 'Salvează Sesiunea' : 'Log Session'}
+              </button>
+            </div>
+          </div>
+          {timerNotice && (
+            <p className="text-xs text-emerald-300 mt-2" role="status">
+              {timerNotice}
+            </p>
+          )}
         </div>
 
         {/* Right 5 cols: AI Daily Insights Glass Card */}
@@ -895,7 +1083,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </div>
                     </button>
 
-                    <div className="flex items-center gap-1.5 text-xs font-mono-tabular shrink-0">
+                    <div className="flex items-center gap-2 text-xs font-mono-tabular shrink-0">
                       <Clock className="w-3.5 h-3.5 text-sky-300" />
                       <span
                         className={
@@ -908,6 +1096,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       >
                         {rem.completed ? t.doneLabel : urgencyLabel}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteReminder(rem.id)}
+                        aria-label={`Delete reminder ${rem.title}`}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-300"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 );

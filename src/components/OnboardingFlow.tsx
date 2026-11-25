@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { BookOpen, GraduationCap, Sparkles, UserCheck, ArrowRight } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { BookOpen, GraduationCap, Sparkles, UserCheck, ArrowRight, Upload, Trash2 } from 'lucide-react';
 import { AccountWorkspaceData, StudentProfile } from '../types/study';
 import { AppLanguage, AppTheme, TRANSLATIONS } from '../utils/i18n';
 import {
@@ -7,6 +7,7 @@ import {
   formatIsoDate,
   validateStudentProfile,
 } from '../utils/studyLogic';
+import { deleteAccountWorkspace, parseImportedWorkspaceJson } from '../utils/storage';
 import { LanguageToggle, ThemeToggle } from './GlassPrimitives';
 
 interface OnboardingFlowProps {
@@ -37,26 +38,58 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
   const [currentSemester, setCurrentSemester] = useState('');
   const [initialSubjectsText, setInitialSubjectsText] = useState('');
   const [errors, setErrors] = useState<Partial<Record<keyof StudentProfile, string>>>({});
+  const [importError, setImportError] = useState('');
+  const [deletedUsernames, setDeletedUsernames] = useState<string[]>([]);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
-  const existingList = Object.values(existingAccounts);
+  const existingList = Object.values(existingAccounts).filter(
+    (acct) => !deletedUsernames.includes(acct.profile.username)
+  );
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = typeof reader.result === 'string' ? reader.result : '';
+      const imported = parseImportedWorkspaceJson(raw);
+      if (!imported) {
+        setImportError(
+          language === 'ro'
+            ? 'Fișierul JSON selectat nu este un backup Stuvyra valid.'
+            : 'Selected JSON file is not a valid Stuvyra workspace backup.'
+        );
+        return;
+      }
+      setImportError('');
+      onCompleteOnboarding(imported);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleDeleteSavedAccount = (targetUsername: string) => {
+    deleteAccountWorkspace(targetUsername);
+    setDeletedUsernames((prev) => [...prev, targetUsername]);
+  };
 
   const handleFillSample = () => {
     if (language === 'ro') {
-      setUsername('andrei_popescu');
-      setUniversity('Universitatea Politehnica din București');
+      setUsername('cristian_cti');
+      setUniversity('Universitatea Națională de Știință și Tehnologie Politehnica București');
       setFaculty('Facultatea de Automatică și Calculatoare');
-      setMajor('Calculatoare și Tehnologia Informației');
-      setYearOfStudy('Anul 3 (Licență)');
+      setMajor('Calculatoare și Tehnologia Informației (CTI)');
+      setYearOfStudy('Anul 1 (Licență)');
       setCurrentSemester('Semestrul I (Toamnă 2026)');
-      setInitialSubjectsText('');
+      setInitialSubjectsText('Programarea Calculatoarelor (PCLP), Utilizarea Sistemelor de Operare (USO), Analiză Matematică, Algebră Liniară');
     } else {
-      setUsername('elena_vance');
-      setUniversity('ETH Zurich');
-      setFaculty('Department of Computer Science');
-      setMajor('Computer Science & Machine Intelligence');
-      setYearOfStudy('Year 3 (Junior)');
+      setUsername('cristian_cti');
+      setUniversity('POLITEHNICA University of Bucharest');
+      setFaculty('Faculty of Automatic Control and Computers (ACS)');
+      setMajor('Computer Science & Engineering (CTI)');
+      setYearOfStudy('Year 1 (Freshman)');
       setCurrentSemester('Fall Semester 2026');
-      setInitialSubjectsText('');
+      setInitialSubjectsText('Computer Programming (C), Operating Systems Usage (Linux), Mathematical Analysis, Linear Algebra');
     }
     setErrors({});
   };
@@ -154,15 +187,38 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
               {t.onboardSubtitle}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleFillSample}
-            className="liquid-glass-btn px-4 py-2.5 rounded-2xl text-xs font-semibold text-sky-200 flex items-center gap-2 whitespace-nowrap shrink-0 self-start sm:self-center"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-sky-300" />
-            <span>{t.fillSampleProfile}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={handleImportFile}
+              className="sr-only"
+            />
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              className="liquid-glass-btn px-3.5 py-2.5 rounded-2xl text-xs font-semibold text-slate-200 flex items-center gap-2 whitespace-nowrap shrink-0"
+            >
+              <Upload className="w-3.5 h-3.5 text-sky-300" />
+              <span>{language === 'ro' ? 'Importă Backup JSON' : 'Import Backup JSON'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleFillSample}
+              className="liquid-glass-btn px-4 py-2.5 rounded-2xl text-xs font-semibold text-sky-200 flex items-center gap-2 whitespace-nowrap shrink-0"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-sky-300" />
+              <span>{t.fillSampleProfile}</span>
+            </button>
+          </div>
         </div>
+
+        {importError && (
+          <p className="mt-4 text-xs text-rose-300" role="alert">
+            {importError}
+          </p>
+        )}
 
         {existingList.length > 0 && (
           <div className="mt-6 liquid-glass-subtle rounded-2xl p-4">
@@ -171,17 +227,29 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
             </p>
             <div className="flex flex-wrap gap-2.5">
               {existingList.map((acct) => (
-                <button
+                <div
                   key={acct.profile.username}
-                  type="button"
-                  onClick={() => onSelectExistingAccount(acct.profile.username)}
-                  className="liquid-glass-btn px-3.5 py-2 rounded-xl text-xs font-medium text-white flex items-center gap-2 whitespace-nowrap shrink-0"
+                  className="inline-flex items-center gap-1 liquid-glass-btn rounded-xl pr-1.5"
                 >
-                  <UserCheck className="w-3.5 h-3.5 text-sky-300" />
-                  <span>@{acct.profile.username}</span>
-                  <span className="text-slate-400">·</span>
-                  <span className="text-slate-300">{acct.profile.university}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectExistingAccount(acct.profile.username)}
+                    className="px-3 py-2 text-xs font-medium text-white flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <UserCheck className="w-3.5 h-3.5 text-sky-300" />
+                    <span>@{acct.profile.username}</span>
+                    <span className="text-slate-400">·</span>
+                    <span className="text-slate-300">{acct.profile.university}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSavedAccount(acct.profile.username)}
+                    aria-label={`Delete account ${acct.profile.username}`}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-300"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
